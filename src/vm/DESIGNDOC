@@ -1,0 +1,249 @@
+       	       	    +---------------------------+
+		    |		EE 415		|
+		    | PROJECT 3: VIRTUAL MEMORY	|
+		    |	   DESIGN DOCUMENT	|
+		    +---------------------------+
+
+---- GROUP ----
+
+>> Fill in the names and email addresses of your group members.
+
+황채영 <cyhwang97@kaist.ac.kr>
+임승호 <limsh2017@kaist.ac.kr>
+
+---- PRELIMINARIES ----
+
+>> If you have any preliminary comments on your submission, notes for the
+>> TAs, or extra credit, please give them here.
+
+>> Please cite any offline or online sources you consulted while
+>> preparing your submission, other than the Pintos documentation, course
+>> text, lecture notes, and course staff.
+
+			PAGE TABLE MANAGEMENT
+			=====================
+
+---- DATA STRUCTURES ----
+
+>> A1: Copy here the declaration of each new or changed `struct' or
+>> `struct' member, global or static variable, `typedef', or
+>> enumeration.  Identify the purpose of each in 25 words or less.
+
+[page.h]
+struct vm_entry
+{
+  uint8_t type;		VM_BIN, VM_FILE, VM_ANON
+  void *vaddr;		virtual page number
+  bool writable;	whether it is writable or not
+  bool is_loaded;	whether it is loaded in physical memory
+  struct file *file;	file mapped to the virtual address
+
+  bool pinned;		for accessing user address space
+
+  struct list_elem mmap_elem;	element of mmap_list
+
+  size_t offset;	offset of file
+  size_t read_bytes;	bytes to read from file
+  size_t zero_bytes;	bytes for zero-padding
+
+  size_t swap_slot;	for swapping
+
+  struct hash_elem elem;	hash table element
+};
+
+struct page
+{
+  void *kaddr;			physical address of page		
+  struct vm_entry *vme;		vm_entry of page	
+  struct thread *thread;	thread that is using the page
+  struct list_elem lru;		
+};
+
+[thread.h]
+struct thread
+{
+  struct hash vm;	hash table of vm
+}
+
+
+---- ALGORITHMS ----
+
+>> A2: In a few paragraphs, describe your code for locating the frame,
+>> if any, that contains the data of a given page.
+
+Each page has its own vm_entry data structure.
+
+
+If there is a frame that contains the data of a given page, it checks the type of the file, whether it is a VM_BIN, VM_FILE, or VM_ANON. Then it locates the frame by the type of the file.
+
+>> A3: How does your code coordinate accessed and dirty bits between
+>> kernel and user virtual addresses that alias a single frame, or
+>> alternatively how do you avoid the issue?
+
+To avoid this issue, we made to access the user data only through user virtual address.
+
+---- SYNCHRONIZATION ----
+
+>> A4: When two user processes both need a new frame at the same time,
+>> how are races avoided?
+
+When we get a new frame, we use palloc_get_page, which uses a lock to avoid race conditions.
+Also, we use lru_list which uses lru_list_lock  to avoid race conditions.
+
+---- RATIONALE ----
+
+>> A5: Why did you choose the data structure(s) that you did for
+>> representing virtual-to-physical mappings?
+
+By using vm_entry, we can easily allocate pages in each types.
+
+		       PAGING TO AND FROM DISK
+		       =======================
+
+---- DATA STRUCTURES ----
+
+>> B1: Copy here the declaration of each new or changed `struct' or
+>> `struct' member, global or static variable, `typedef', or
+>> enumeration.  Identify the purpose of each in 25 words or less.
+
+[swap.c]
+struct lock swap_lock;		lock for swapping
+struct bitmap *swap_bitmap;	shows whether the swap slot is free or used
+struct block *swap_block;	swap partition
+
+[frame.c]
+static struct list lru_list;		list for handling pages
+static struct lock lru_list_lock;	lock used when accessing lru_list
+static struct list_elem *lru_clock;	list element for lru_list
+
+---- ALGORITHMS ----
+
+>> B2: When a frame is required but none is free, some frame must be
+>> evicted.  Describe your code for choosing a frame to evict.
+
+It uses the lru_list and clock algorithm to choose a victim page to evict. It finds the page that is not accessed recently or an unpinned page as the victim page. Then it swap outs the victim page to the disk.
+
+>> B3: When a process P obtains a frame that was previously used by a
+>> process Q, how do you adjust the page table (and any other data
+>> structures) to reflect the frame Q no longer has?
+
+After Q uses the frame, it clears the frame from its page table. By clearing all the related entries of the frame, process P will not know it was previously used by Q.
+
+>> B4: Explain your heuristic for deciding whether a page fault for an
+>> invalid virtual address should cause the stack to be extended into
+>> the page that faulted.
+
+If the fault address is in the user address, and if it is in stack pointer address - 32 or above, it calls expand_stack to expand the stack. Also, the address should be higher than PHYS_BASE - 8 * 1048576.
+If the address doesn't satisfy the above conditions, it calls exit system call.
+
+---- SYNCHRONIZATION ----
+
+>> B5: Explain the basics of your VM synchronization design.  In
+>> particular, explain how it prevents deadlock.  (Refer to the
+>> textbook for an explanation of the necessary conditions for
+>> deadlock.)
+
+We designed to prevent deadlock by making a process to not acquire two locks at the same time.
+
+>> B6: A page fault in process P can cause another process Q's frame
+>> to be evicted.  How do you ensure that Q cannot access or modify
+>> the page during the eviction process?  How do you avoid a race
+>> between P evicting Q's frame and Q faulting the page back in?
+
+In the eviction process, it uses lru_list_lock during free_page so that other processes cannot access or modify the page during the eviction process.
+
+>> B7: Suppose a page fault in process P causes a page to be read from
+>> the file system or swap.  How do you ensure that a second process Q
+>> cannot interfere by e.g. attempting to evict the frame while it is
+>> still being read in?
+
+We added a new struct entry pinned in vm_entry. When doing system call, specifically read system call, it sets the page to pinning page so that other processes cannot interfere with the page.
+
+>> B8: Explain how you handle access to paged-out pages that occur
+>> during system calls.  Do you use page faults to bring in pages (as
+>> in user programs), or do you have a mechanism for "locking" frames
+>> into physical memory, or do you use some other design?  How do you
+>> gracefully handle attempted accesses to invalid virtual addresses?
+
+When access to paged-out pages occur during system calls, page fault occurs and brings back the page. Also in page_fault function, it checks whether the address is valid or not. Therefore, invalid virtual address access will call exit system call.
+
+---- RATIONALE ----
+
+>> B9: A single lock for the whole VM system would make
+>> synchronization easy, but limit parallelism.  On the other hand,
+>> using many locks complicates synchronization and raises the
+>> possibility for deadlock but allows for high parallelism.  Explain
+>> where your design falls along this continuum and why you chose to
+>> design it this way.
+
+We chose to use locks for certain executions. For managing pages, when putting pages into lru_list, we used lru_list_lock. For swapping, we used swap_lock. In this way, if different processes access the same file, it can avoid race conditions.
+
+			 MEMORY MAPPED FILES
+			 ===================
+
+---- DATA STRUCTURES ----
+
+>> C1: Copy here the declaration of each new or changed `struct' or
+>> `struct' member, global or static variable, `typedef', or
+>> enumeration.  Identify the purpose of each in 25 words or less.
+
+[page.h]
+struct mmap_file {
+  int mapid;			map id for mapped file
+  struct file* file;		file to be mapped
+  struct list_elem elem;	element for mmap_list
+  struct list vme_list;		list of vm_entry
+}
+
+---- ALGORITHMS ----
+
+>> C2: Describe how memory mapped files integrate into your virtual
+>> memory subsystem.  Explain how the page fault and eviction
+>> processes differ between swap pages and other pages.
+
+mmap system call opens the file to be mapped and loads the file by allocating vm_entry to each PGSIZE of the file. Then, it puts the vm_entry into the vme_list.
+We use mmap_file data structure to specity the files to be mapped. The mapped file will get a mapid, and the mmap_file will be put into the current thread's mmap_list.
+For eviction process, we use munmap system call. It finds the mmap_list for the corresponding mapid and checks whether it is dirty. If it is dirty, it writes back to the file. Then it fress the page and closes the file.
+When page fault accurs, it finds the vm_entry correspoing to the address and loads the file.
+
+>> C3: Explain how you determine whether a new file mapping overlaps
+>> any existing segment.
+
+In mmap system call, it finds the correspoding vm_entry. If there already is a vm_entry, it doesn't map the file and returns. In this way, file mapping isn't overlapped.
+
+---- RATIONALE ----
+
+>> C4: Mappings created with "mmap" have similar semantics to those of
+>> data demand-paged from executables, except that "mmap" mappings are
+>> written back to their original files, not to swap.  This implies
+>> that much of their implementation can be shared.  Explain why your
+>> implementation either does or does not share much of the code for
+>> the two situations.
+
+mmap and demand paging both load data from file to memory in the same way. Therefore when page fault occurs, it loads the file in the same way.
+The differences are that in mmap, it uses a mmap_file data structure and mmap_list to manage them, and when it munmap the file, it checks whether it is dirty and writes back to the file.
+
+			   SURVEY QUESTIONS
+			   ================
+
+Answering these questions is optional, but it will help us improve the
+course in future quarters.  Feel free to tell us anything you
+want--these questions are just to spur your thoughts.  You may also
+choose to respond anonymously in the course evaluations at the end of
+the quarter.
+
+>> In your opinion, was this assignment, or any one of the three problems
+>> in it, too easy or too hard?  Did it take too long or too little time?
+
+>> Did you find that working on a particular part of the assignment gave
+>> you greater insight into some aspect of OS design?
+
+>> Is there some particular fact or hint we should give students in
+>> future quarters to help them solve the problems?  Conversely, did you
+>> find any of our guidance to be misleading?
+
+>> Do you have any suggestions for the TAs to more effectively assist
+>> students, either for future quarters or the remaining projects?
+
+>> Any other comments?
+
